@@ -77,6 +77,10 @@ class WhatsAppService {
   start(): void {
     if (this.client) return;
 
+    // Fresh attempt: reset readiness state (important when re-initializing
+    // after a `disconnected` event tore the previous client down).
+    this.state = "initializing";
+
     const dataPath =
       process.env.WHATSAPP_SESSION_PATH || "./.wwebjs_auth";
     const headless = process.env.WHATSAPP_HEADLESS !== "false";
@@ -137,6 +141,17 @@ class WhatsAppService {
       this.state = "disconnected";
       this.lastError = reason;
       log("Disconnected:", reason);
+      // Tear the client down so the next operation re-initializes a fresh one.
+      // Without this, `start()` stays a no-op (client is still set) and
+      // `ensureReady()` keeps returning the dead client — every tool call would
+      // fail until the whole process restarts.
+      const dead = this.client;
+      this.client = null;
+      this.readyPromise = null;
+      this.readyResolve = null;
+      dead?.destroy().catch(() => {
+        /* already gone — nothing to clean up */
+      });
     });
 
     this.client.initialize().catch((err: unknown) => {
@@ -159,7 +174,9 @@ class WhatsAppService {
    * `timeoutMs` for the "ready" event, otherwise throws an actionable error.
    */
   private async ensureReady(timeoutMs = 20_000): Promise<InstanceType<typeof Client>> {
-    if (!this.client) {
+    // A prior `disconnected` event nulls the client; recreate it here so the
+    // session can come back without restarting the process.
+    if (!this.client || this.state === "disconnected") {
       this.start();
     }
     if (this.state === "ready") {
@@ -271,7 +288,12 @@ class WhatsAppService {
     message: string;
   }): Promise<{ chatId: string; messageId: string }> {
     const client = await this.ensureReady();
-    const chat = await this.resolveChat(client, options.chatId, options.name);
+    const chat = await this.resolveChat(
+      client,
+      options.chatId,
+      options.name,
+      true, // require a unique match before sending a real message
+    );
     const sent = await client.sendMessage(
       chat.id._serialized,
       options.message,
@@ -288,6 +310,7 @@ class WhatsAppService {
     client: InstanceType<typeof Client>,
     chatId?: string,
     name?: string,
+    requireUnique = false,
   ): Promise<Chat> {
     if (chatId) {
       return client.getChatById(chatId);
@@ -295,16 +318,33 @@ class WhatsAppService {
     if (name) {
       const chats = await client.getChats();
       const needle = name.toLowerCase();
-      const exact = chats.find((c) => (c.name || "").toLowerCase() === needle);
-      const match =
-        exact || chats.find((c) => (c.name || "").toLowerCase().includes(needle));
-      if (!match) {
+      // Prefer exact name matches; fall back to substring matches only when
+      // there is no exact hit.
+      const exact = chats.filter((c) => (c.name || "").toLowerCase() === needle);
+      const candidates =
+        exact.length > 0
+          ? exact
+          : chats.filter((c) => (c.name || "").toLowerCase().includes(needle));
+
+      if (candidates.length === 0) {
         throw new Error(
           `No chat found matching name "${name}". Use whatsapp_list_chats to see available chats, ` +
             "or pass an explicit chatId.",
         );
       }
-      return match;
+      // When the side effect is irreversible (sending), never guess between
+      // several matches — force the caller to disambiguate with a chatId.
+      if (requireUnique && candidates.length > 1) {
+        const list = candidates
+          .slice(0, 10)
+          .map((c) => `"${c.name || "(no name)"}" [${c.id._serialized}]`)
+          .join(", ");
+        throw new Error(
+          `Ambiguous recipient: ${candidates.length} chats match "${name}": ${list}. ` +
+            "Pass an explicit chatId to choose the exact recipient.",
+        );
+      }
+      return candidates[0];
     }
     throw new Error("Either chatId or name must be provided.");
   }
