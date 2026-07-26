@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "whatsapp": {
+      "command": "npx",
+      "args": [
+        "@kaptionai/mcp-extension"
+      ]
+    }
+  }
+}
