@@ -1,8 +1,10 @@
 {
   "mcpServers": {
     "whatsapp": {
-      "type": "sse",
-      "url": "https://mcp-ext.kaptionai.com/sse?phone=${KAPTION_PHONE}"
+      "command": "npx",
+      "args": [
+        "@kaptionai/mcp-extension"
+      ]
     }
   }
 }
