@@ -3,7 +3,8 @@
     "whatsapp": {
       "command": "npx",
       "args": [
-        "@kaptionai/mcp-extension"
+        "-y",
+        "@kaptionai/mcp-extension@latest"
       ]
     }
   }
